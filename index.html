@@ -3,213 +3,327 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Transfer</title>
-    <!-- Standard QR Library -->
+    <title>Drop & Share</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        body {
-            background-color: #111;
-            color: #0f0;
-            font-family: monospace;
-            padding: 20px;
-        }
-
-        #drop-zone {
-            width: 100%;
-            height: 150px;
-            border: 2px dashed #0f0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 30px;
-            cursor: pointer;
-            font-size: 1.2em;
-        }
-        #drop-zone:hover { background-color: #222; }
-
-        .file-item {
-            border-bottom: 1px solid #333;
-            padding: 20px 0;
-            display: flex;
-            align-items: flex-start;
-        }
-
-        .details { flex-grow: 1; margin-right: 20px; }
-        .filename { font-size: 1.2em; font-weight: bold; margin-bottom: 10px; display: block; }
+        body { font-family: sans-serif; text-align: center; padding: 20px; background: #f0f0f0; }
         
-        /* The Progress Bar */
-        .progress-wrapper {
-            width: 100%;
-            background: #333;
-            height: 25px;
-            margin: 10px 0;
-            position: relative;
+        /* Layout */
+        #drop-zone {
+            border: 3px dashed #007bff; border-radius: 10px; padding: 40px;
+            margin: 20px auto; width: 85%; max-width: 500px; background: white;
+            color: #555; transition: background 0.3s;
         }
-        .bar {
-            height: 100%;
-            background-color: #0f0; /* Green for Upload */
-            width: 0%;
-            transition: width 0.2s;
-        }
-        .bar.loading { background-color: #0088ff; } /* Blue for Loading back */
+        #drop-zone.highlight { background: #e0f0ff; }
+        
+        #status { margin: 10px 0; font-weight: bold; color: #333; }
+        #qrcode { margin: 20px auto; display: flex; justify-content: center; }
+        
+        /* Controls */
+        #controls { max-width: 500px; margin: 10px auto; display: none; justify-content: space-between; align-items: center; }
+        button { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        button#download-all-btn { background: #28a745; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
 
-        .status-text { color: #888; font-size: 0.9em; }
-
-        /* QR Code Area */
-        .qr-area {
-            background: white;
-            padding: 10px;
-            display: none; /* Hidden until upload finishes */
+        /* File List */
+        #file-list { list-style: none; padding: 0; max-width: 500px; margin: 0 auto; text-align: left; }
+        .file-item {
+            background: #fff; border: 1px solid #ddd; padding: 10px; margin-bottom: 8px;
+            border-radius: 5px; transition: opacity 0.3s;
+            display: flex; flex-direction: column; gap: 5px;
         }
+        
+        .file-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+        .file-name { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+        .file-meta { font-size: 0.8em; color: #666; }
 
-        a.download-btn {
-            display: none;
-            background: #0f0;
-            color: #000;
-            padding: 5px 10px;
-            text-decoration: none;
-            font-weight: bold;
-            margin-top: 10px;
-        }
+        /* Progress Bar */
+        .progress-bar-container { width: 100%; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-top: 5px;}
+        .progress-bar-fill { height: 100%; background: #007bff; width: 0%; transition: width 0.1s linear; }
+
+        /* Download UI (Hidden until done) */
+        .download-ui { display: none; align-items: center; gap: 10px; }
+        
+        /* Sync Status (Grayed Out) */
+        .file-item.downloaded { background: #f0f0f0; border-color: #eee; }
+        .file-item.downloaded .file-name { color: #999; }
+        .file-item.downloaded button { background: #ccc; pointer-events: none; }
+        
+        input[type="checkbox"] { transform: scale(1.2); cursor: pointer; }
     </style>
 </head>
 <body>
 
-    <!-- DRAG DROP ZONE -->
-    <div id="drop-zone">
-        [ DRAG FILES HERE OR CLICK ]
-        <input type="file" id="fileInput" multiple style="display:none">
+    <h1>File Loader</h1>
+    <div id="status">Connecting to server...</div>
+
+    <div id="qrcode"></div>
+    <div id="link-container" style="display:none; margin-bottom: 15px;">
+        <p>Scan to connect: <a id="join-link" href="#">Link</a></p>
     </div>
 
-    <!-- LIST OF FILES -->
-    <div id="file-list"></div>
+    <div id="drop-zone">
+        Drag & Drop files here<br>
+        <span style="font-size: 0.8em; color: #888;">(Or tap to select)</span>
+        <input type="file" id="file-input" style="display: none;" multiple>
+    </div>
+
+    <div id="controls">
+        <label style="display: flex; align-items: center; gap: 5px;">
+            <input type="checkbox" id="select-all"> Select All
+        </label>
+        <button id="download-all-btn">Download Selected</button>
+    </div>
+
+    <ul id="file-list"></ul>
 
     <script>
+        const peer = new Peer();
+        let conn = null;
+        
+        // Storage for incoming chunks
+        const incomingFiles = {}; // { fileId: { chunks: [], total: 0, received: 0, name: '', type: '' } }
+        const completedBlobs = {}; // { fileName: Blob }
+
+        const statusEl = document.getElementById('status');
         const dropZone = document.getElementById('drop-zone');
-        const fileInput = document.getElementById('fileInput');
-        const list = document.getElementById('file-list');
-
-        // Drag & Drop Logic
-        dropZone.onclick = () => fileInput.click();
+        const fileInput = document.getElementById('file-input');
+        const fileList = document.getElementById('file-list');
+        const controlsDiv = document.getElementById('controls');
         
-        dropZone.ondragover = (e) => { 
-            e.preventDefault(); 
-            dropZone.style.backgroundColor = "#222"; 
-        };
-        
-        dropZone.ondragleave = () => { 
-            dropZone.style.backgroundColor = "transparent"; 
-        };
-        
-        dropZone.ondrop = (e) => {
-            e.preventDefault();
-            dropZone.style.backgroundColor = "transparent";
-            handleFiles(e.dataTransfer.files);
-        };
+        // --- 1. Connection Logic ---
+        peer.on('open', (id) => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const hostId = urlParams.get('host');
 
-        fileInput.onchange = (e) => handleFiles(e.target.files);
+            if (hostId) {
+                // Receiver (Phone)
+                statusEl.textContent = "Connecting to host...";
+                conn = peer.connect(hostId);
+                setupReceiver();
+                document.getElementById('qrcode').style.display = 'none';
+                dropZone.style.display = 'none'; 
+                controlsDiv.style.display = 'flex';
+            } else {
+                // Sender (PC)
+                statusEl.textContent = "Waiting for connection...";
+                const joinUrl = `${window.location.href.split('?')[0]}?host=${id}`;
+                new QRCode(document.getElementById("qrcode"), joinUrl);
+                document.getElementById('join-link').href = joinUrl;
+                document.getElementById('join-link').textContent = joinUrl;
+                document.getElementById('link-container').style.display = 'block';
 
-        function handleFiles(files) {
-            Array.from(files).forEach(file => {
-                processFile(file);
+                peer.on('connection', (c) => {
+                    conn = c;
+                    statusEl.textContent = "Device Connected!";
+                    setupSender();
+                    document.getElementById('qrcode').style.display = 'none';
+                    document.getElementById('link-container').style.display = 'none';
+                });
+            }
+        });
+
+        // --- 2. Sender Logic (PC) ---
+        function setupSender() {
+            conn.on('open', () => {
+                statusEl.textContent = "Ready to Send";
+                dropZone.style.borderColor = "#28a745";
+            });
+            
+            // Listen for "download complete" signals to gray out items
+            conn.on('data', (data) => {
+                if(data.type === 'download-confirm') markAsDownloadedUI(data.name);
+            });
+
+            dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('highlight'); });
+            dropZone.addEventListener('dragleave', () => dropZone.classList.remove('highlight'));
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault(); dropZone.classList.remove('highlight');
+                handleFiles(e.dataTransfer.files);
+            });
+            dropZone.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+        }
+
+        async function handleFiles(files) {
+            if (!conn || !conn.open) return alert("Connect a device first!");
+            
+            for (let file of files) {
+                const fileId = Math.random().toString(36).substr(2, 9);
+                createFileItemUI(fileId, file.name, "Sending...", false); // false = isReceiver
+                
+                // 1. Send Start Header
+                conn.send({ 
+                    type: 'start', id: fileId, name: file.name, 
+                    size: file.size, fileType: file.type 
+                });
+
+                // 2. Chunk and Send
+                const chunkSize = 16 * 1024; // 16KB chunks
+                let offset = 0;
+                
+                while(offset < file.size) {
+                    const chunk = file.slice(offset, offset + chunkSize);
+                    const buffer = await chunk.arrayBuffer();
+                    
+                    conn.send({ 
+                        type: 'chunk', id: fileId, 
+                        data: buffer 
+                    });
+                    
+                    offset += buffer.byteLength;
+                    updateProgressUI(fileId, offset, file.size);
+                    
+                    // Small delay to prevent network congestion
+                    if (offset % (chunkSize * 5) === 0) await new Promise(r => setTimeout(r, 10));
+                }
+                
+                // 3. Update UI to Sent
+                document.getElementById(`status-${fileId}`).textContent = "Sent ✅";
+            }
+        }
+
+        // --- 3. Receiver Logic (Phone) ---
+        function setupReceiver() {
+            conn.on('open', () => statusEl.textContent = "Ready to Receive");
+            
+            conn.on('data', (data) => {
+                if (data.type === 'start') {
+                    // Initialize file buffer
+                    incomingFiles[data.id] = {
+                        chunks: [], total: data.size, received: 0,
+                        name: data.name, type: data.fileType
+                    };
+                    createFileItemUI(data.id, data.name, "Receiving...", true);
+                } 
+                else if (data.type === 'chunk') {
+                    const f = incomingFiles[data.id];
+                    if (!f) return;
+
+                    f.chunks.push(data.data);
+                    f.received += data.data.byteLength;
+                    
+                    updateProgressUI(data.id, f.received, f.total);
+
+                    if (f.received >= f.total) {
+                        // Complete! Reassemble and Show Download
+                        const blob = new Blob(f.chunks, { type: f.type });
+                        completedBlobs[f.name] = blob;
+                        
+                        finalizeReceiverItem(data.id, f.name);
+                        delete incomingFiles[data.id]; // Free memory
+                    }
+                }
             });
         }
 
-        function processFile(file) {
-            // 1. Create the HTML row for this file
-            const row = document.createElement('div');
-            row.className = 'file-item';
-            row.innerHTML = `
-                <div class="details">
-                    <span class="filename">${file.name}</span>
-                    <div class="progress-wrapper">
-                        <div class="bar"></div>
+        // --- 4. UI Functions ---
+
+        function createFileItemUI(id, name, statusText, isReceiver) {
+            const li = document.createElement('li');
+            li.className = 'file-item';
+            li.id = `item-${id}`;
+            // Also tag with name for sync lookup
+            li.dataset.filename = name; 
+
+            let controlsHtml = '';
+            if(isReceiver) {
+                // Hidden download controls, shown when done
+                controlsHtml = `
+                    <div class="download-ui" id="dl-ui-${id}">
+                        <input type="checkbox" class="file-check" value="${name}">
+                        <button onclick="triggerDownload('${name}')">↓ Download</button>
                     </div>
-                    <div class="status-text">Waiting...</div>
-                    <a href="#" class="download-btn">DOWNLOAD FILE</a>
+                `;
+            }
+
+            li.innerHTML = `
+                <div class="file-header">
+                    <span class="file-name">${name}</span>
+                    <span class="file-meta" id="status-${id}">${statusText}</span>
                 </div>
-                <div class="qr-area"></div>
+                <div class="progress-bar-container" id="prog-cont-${id}">
+                    <div class="progress-bar-fill" id="prog-bar-${id}"></div>
+                </div>
+                ${controlsHtml}
             `;
-            list.appendChild(row);
-
-            // Get references
-            const bar = row.querySelector('.bar');
-            const status = row.querySelector('.status-text');
-            const qrArea = row.querySelector('.qr-area');
-            const downloadBtn = row.querySelector('.download-btn');
-
-            // 2. START UPLOAD (SENDING)
-            const xhr = new XMLHttpRequest();
-            const formData = new FormData();
-            formData.append('file', file);
-
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const percent = (e.loaded / e.total) * 100;
-                    bar.style.width = percent + '%';
-                    status.innerText = `>> UPLOADING: ${Math.round(percent)}%`;
-                }
-            };
-
-            xhr.onload = () => {
-                if (xhr.status === 200) {
-                    // Upload success
-                    const fileUrl = xhr.responseText.trim(); // Server echoes the URL
-                    
-                    // SHOW QR CODE
-                    qrArea.style.display = 'block';
-                    new QRCode(qrArea, {
-                        text: fileUrl,
-                        width: 100,
-                        height: 100
-                    });
-
-                    // Change bar color and reset for next phase
-                    bar.className = 'bar loading';
-                    bar.style.width = '0%';
-                    
-                    // 3. START LOADING (PRE-FETCH FOR DOWNLOAD)
-                    startLoading(fileUrl, bar, status, downloadBtn, file.name);
-
-                } else {
-                    status.innerText = "Upload Failed.";
-                    bar.style.backgroundColor = "red";
-                }
-            };
-
-            // POINT THIS TO YOUR PHP FILE
-            xhr.open('POST', 'upload_script.php', true);
-            xhr.send(formData);
+            fileList.appendChild(li);
         }
 
-        function startLoading(url, bar, status, btn, filename) {
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', url, true);
-            xhr.responseType = 'blob'; // Vital for reading file data
-
-            xhr.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const percent = (e.loaded / e.total) * 100;
-                    bar.style.width = percent + '%';
-                    status.innerText = `<< LOADING: ${Math.round(percent)}%`;
-                }
-            };
-
-            xhr.onload = function() {
-                if (this.status === 200) {
-                    // Fully loaded
-                    bar.style.width = '100%';
-                    status.innerText = "READY.";
-                    
-                    const blobUrl = window.URL.createObjectURL(this.response);
-                    btn.href = blobUrl;
-                    btn.download = filename;
-                    btn.style.display = 'inline-block';
-                }
-            };
-
-            xhr.send();
+        function updateProgressUI(id, current, total) {
+            const percent = Math.round((current / total) * 100);
+            const bar = document.getElementById(`prog-bar-${id}`);
+            const status = document.getElementById(`status-${id}`);
+            if (bar) bar.style.width = `${percent}%`;
+            if (status) status.textContent = `${percent}%`;
         }
+
+        function finalizeReceiverItem(id, name) {
+            // Hide progress bar, Show download controls
+            document.getElementById(`prog-cont-${id}`).style.display = 'none';
+            document.getElementById(`status-${id}`).textContent = 'Ready';
+            document.getElementById(`dl-ui-${id}`).style.display = 'flex';
+        }
+
+        function markAsDownloadedUI(name) {
+            // Find item by dataset
+            const items = document.querySelectorAll('.file-item');
+            items.forEach(li => {
+                if(li.dataset.filename === name) {
+                    li.classList.add('downloaded');
+                    const btn = li.querySelector('button');
+                    if(btn) btn.textContent = "✓";
+                    const status = li.querySelector('.file-meta');
+                    if(status) status.textContent = "Downloaded";
+                    const cb = li.querySelector('input[type="checkbox"]');
+                    if(cb) { cb.checked = false; cb.disabled = true; }
+                }
+            });
+        }
+
+        // --- 5. Download & Sync ---
+
+        function triggerDownload(name) {
+            const blob = completedBlobs[name];
+            if (!blob) return;
+
+            // Save file
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            // Update UI locally
+            markAsDownloadedUI(name);
+
+            // Tell Sender
+            if(conn && conn.open) {
+                conn.send({ type: 'download-confirm', name: name });
+            }
+        }
+
+        // Bulk Actions
+        document.getElementById('select-all').addEventListener('change', (e) => {
+            const checkboxes = document.querySelectorAll('.file-check:not(:disabled)');
+            checkboxes.forEach(cb => cb.checked = e.target.checked);
+        });
+
+        document.getElementById('download-all-btn').addEventListener('click', () => {
+            const checkedBoxes = document.querySelectorAll('.file-check:checked');
+            if (checkedBoxes.length === 0) return alert("Select files first!");
+
+            let delay = 0;
+            checkedBoxes.forEach(cb => {
+                setTimeout(() => triggerDownload(cb.value), delay);
+                delay += 500;
+            });
+            document.getElementById('select-all').checked = false;
+        });
     </script>
 </body>
 </html>
