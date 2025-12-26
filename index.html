@@ -4,124 +4,141 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Transfer</title>
-    <!-- The QR Library -->
+    <!-- Standard QR Library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        /* Classic Dark UI */
-        body { background-color: #121212; color: #00FF41; font-family: monospace; padding: 20px; }
-        
-        #drop-zone {
-            border: 2px dashed #00FF41;
-            padding: 50px;
-            text-align: center;
-            margin-bottom: 20px;
-            cursor: pointer;
-            opacity: 0.8;
+        body {
+            background-color: #111;
+            color: #0f0;
+            font-family: monospace;
+            padding: 20px;
         }
-        #drop-zone:hover { opacity: 1; background: #1a1a1a; }
 
-        .file-row {
-            border: 1px solid #333;
-            background: #1e1e1e;
-            padding: 15px;
-            margin-bottom: 15px;
+        #drop-zone {
+            width: 100%;
+            height: 150px;
+            border: 2px dashed #0f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 30px;
+            cursor: pointer;
+            font-size: 1.2em;
+        }
+        #drop-zone:hover { background-color: #222; }
+
+        .file-item {
+            border-bottom: 1px solid #333;
+            padding: 20px 0;
             display: flex;
             align-items: flex-start;
-            gap: 20px;
         }
 
-        .info-col { flex-grow: 1; }
-        .qr-col { width: 100px; height: 100px; background: white; padding: 5px; display: none; }
-
-        h4 { margin: 0 0 5px 0; color: white; }
+        .details { flex-grow: 1; margin-right: 20px; }
+        .filename { font-size: 1.2em; font-weight: bold; margin-bottom: 10px; display: block; }
         
         /* The Progress Bar */
-        .progress-container {
+        .progress-wrapper {
             width: 100%;
-            height: 20px;
             background: #333;
-            margin-top: 5px;
+            height: 25px;
+            margin: 10px 0;
+            position: relative;
         }
         .bar {
             height: 100%;
+            background-color: #0f0; /* Green for Upload */
             width: 0%;
             transition: width 0.2s;
         }
-        /* Sending Color */
-        .sending { background-color: #00FF41; } 
-        /* Loading Color (preparing download) */
-        .loading { background-color: #00d2ff; } 
+        .bar.loading { background-color: #0088ff; } /* Blue for Loading back */
 
-        .status { margin-top: 5px; font-size: 12px; color: #888; }
-        
-        /* Download Button */
-        .dl-btn {
+        .status-text { color: #888; font-size: 0.9em; }
+
+        /* QR Code Area */
+        .qr-area {
+            background: white;
+            padding: 10px;
+            display: none; /* Hidden until upload finishes */
+        }
+
+        a.download-btn {
             display: none;
-            margin-top: 10px;
-            background: #00FF41;
-            color: black;
-            text-decoration: none;
+            background: #0f0;
+            color: #000;
             padding: 5px 10px;
+            text-decoration: none;
             font-weight: bold;
-            display: inline-block;
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
 
+    <!-- DRAG DROP ZONE -->
     <div id="drop-zone">
-        [ DRAG FILES HERE ]
+        [ DRAG FILES HERE OR CLICK ]
         <input type="file" id="fileInput" multiple style="display:none">
     </div>
 
-    <div id="list"></div>
+    <!-- LIST OF FILES -->
+    <div id="file-list"></div>
 
     <script>
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('fileInput');
-        const list = document.getElementById('list');
+        const list = document.getElementById('file-list');
 
-        // --- Drag & Drop Setup ---
+        // Drag & Drop Logic
         dropZone.onclick = () => fileInput.click();
         
-        dropZone.ondragover = (e) => { e.preventDefault(); dropZone.style.background = '#222'; };
-        dropZone.ondragleave = () => { dropZone.style.background = 'transparent'; };
+        dropZone.ondragover = (e) => { 
+            e.preventDefault(); 
+            dropZone.style.backgroundColor = "#222"; 
+        };
+        
+        dropZone.ondragleave = () => { 
+            dropZone.style.backgroundColor = "transparent"; 
+        };
         
         dropZone.ondrop = (e) => {
             e.preventDefault();
-            dropZone.style.background = 'transparent';
+            dropZone.style.backgroundColor = "transparent";
             handleFiles(e.dataTransfer.files);
         };
 
         fileInput.onchange = (e) => handleFiles(e.target.files);
 
         function handleFiles(files) {
-            Array.from(files).forEach(processFile);
+            Array.from(files).forEach(file => {
+                processFile(file);
+            });
         }
 
         function processFile(file) {
-            // 1. Create UI immediately
+            // 1. Create the HTML row for this file
             const row = document.createElement('div');
-            row.className = 'file-row';
+            row.className = 'file-item';
             row.innerHTML = `
-                <div class="info-col">
-                    <h4>${file.name}</h4>
-                    <div class="progress-container">
-                        <div class="bar sending" style="width:0%"></div>
+                <div class="details">
+                    <span class="filename">${file.name}</span>
+                    <div class="progress-wrapper">
+                        <div class="bar"></div>
                     </div>
-                    <div class="status">Waiting to send...</div>
-                    <a href="#" class="dl-btn" style="display:none">DOWNLOAD READY</a>
+                    <div class="status-text">Waiting...</div>
+                    <a href="#" class="download-btn">DOWNLOAD FILE</a>
                 </div>
-                <div class="qr-col"></div>
+                <div class="qr-area"></div>
             `;
             list.appendChild(row);
 
+            // Get references
             const bar = row.querySelector('.bar');
-            const status = row.querySelector('.status');
-            const qrBox = row.querySelector('.qr-col');
-            const dlBtn = row.querySelector('.dl-btn');
+            const status = row.querySelector('.status-text');
+            const qrArea = row.querySelector('.qr-area');
+            const downloadBtn = row.querySelector('.download-btn');
 
-            // 2. PHASE 1: UPLOAD (Sending)
+            // 2. START UPLOAD (SENDING)
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
             formData.append('file', file);
@@ -130,44 +147,45 @@
                 if (e.lengthComputable) {
                     const percent = (e.loaded / e.total) * 100;
                     bar.style.width = percent + '%';
-                    status.innerText = `>> SENDING: ${Math.round(percent)}%`;
+                    status.innerText = `>> UPLOADING: ${Math.round(percent)}%`;
                 }
             };
 
             xhr.onload = () => {
                 if (xhr.status === 200) {
-                    // Upload Done.
-                    const fileUrl = xhr.responseText.trim(); // Server must echo the URL
+                    // Upload success
+                    const fileUrl = xhr.responseText.trim(); // Server echoes the URL
                     
-                    // Generate QR
-                    qrBox.style.display = 'block';
-                    new QRCode(qrBox, { text: fileUrl, width: 100, height: 100 });
+                    // SHOW QR CODE
+                    qrArea.style.display = 'block';
+                    new QRCode(qrArea, {
+                        text: fileUrl,
+                        width: 100,
+                        height: 100
+                    });
 
-                    // Switch Bar Color for Phase 2
-                    bar.className = 'bar loading'; 
+                    // Change bar color and reset for next phase
+                    bar.className = 'bar loading';
                     bar.style.width = '0%';
                     
-                    // 3. PHASE 2: LOAD (Download Prep)
-                    startLoading(fileUrl, bar, status, dlBtn, file.name);
+                    // 3. START LOADING (PRE-FETCH FOR DOWNLOAD)
+                    startLoading(fileUrl, bar, status, downloadBtn, file.name);
 
                 } else {
-                    status.innerText = "Error: Server rejected file (Check upload_max_filesize)";
-                    status.style.color = "red";
-                    bar.style.background = "red";
+                    status.innerText = "Upload Failed.";
+                    bar.style.backgroundColor = "red";
                 }
             };
 
-            xhr.onerror = () => { status.innerText = "Network Error during Upload"; };
-
-            // CHANGE THIS to your PHP/Node script
+            // POINT THIS TO YOUR PHP FILE
             xhr.open('POST', 'upload_script.php', true);
             xhr.send(formData);
         }
 
-        function startLoading(url, bar, status, dlBtn, filename) {
+        function startLoading(url, bar, status, btn, filename) {
             const xhr = new XMLHttpRequest();
             xhr.open('GET', url, true);
-            xhr.responseType = 'blob'; // Critical for "Loading" progress
+            xhr.responseType = 'blob'; // Vital for reading file data
 
             xhr.onprogress = (e) => {
                 if (e.lengthComputable) {
@@ -179,15 +197,14 @@
 
             xhr.onload = function() {
                 if (this.status === 200) {
-                    // Finished
+                    // Fully loaded
                     bar.style.width = '100%';
-                    bar.style.background = '#00FF41'; // Green again
-                    status.innerText = "Ready.";
+                    status.innerText = "READY.";
                     
                     const blobUrl = window.URL.createObjectURL(this.response);
-                    dlBtn.href = blobUrl;
-                    dlBtn.download = filename;
-                    dlBtn.style.display = 'inline-block';
+                    btn.href = blobUrl;
+                    btn.download = filename;
+                    btn.style.display = 'inline-block';
                 }
             };
 
