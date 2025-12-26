@@ -3,161 +3,185 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Receiver</title>
+    <title>File Transfer + QR</title>
+    <!-- Basic QR Library (Required for the QR stuff) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
-        body { font-family: sans-serif; padding: 20px; background: #f0f0f0; }
+        body { font-family: monospace; background: #1a1a1a; color: #0f0; padding: 20px; }
         
-        /* The Card for each incoming file */
-        .incoming-file {
-            background: white;
-            padding: 15px;
-            margin-bottom: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-
-        .file-header {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 10px;
-            font-weight: bold;
-        }
-
-        /* The Progress Bar Track */
-        .progress-track {
-            background-color: #eee;
-            height: 12px;
-            border-radius: 6px;
-            overflow: hidden;
-            margin-bottom: 8px;
-        }
-
-        /* The Moving Bar */
-        .progress-fill {
-            background-color: #2196F3; /* Blue for incoming */
-            height: 100%;
-            width: 0%;
-            transition: width 0.1s linear;
-        }
-
-        .status-text {
-            font-size: 12px;
-            color: #666;
-        }
-
-        /* The Button that appears when finished */
-        .save-btn {
-            display: none; /* Hidden until 100% */
-            margin-top: 10px;
-            background-color: #4CAF50;
-            color: white;
-            padding: 8px 15px;
-            text-decoration: none;
-            border-radius: 4px;
+        /* THE DRAG & DROP ZONE */
+        #drop-zone {
+            border: 2px dashed #0f0;
+            padding: 40px;
             text-align: center;
-            font-weight: bold;
-            display: block; /* For this demo, we toggle via JS */
+            margin-bottom: 20px;
+            background: #222;
+            cursor: pointer;
         }
+        #drop-zone.hover { background: #333; }
+
+        /* FILE LIST ITEM */
+        .file-item {
+            border: 1px solid #444;
+            padding: 10px;
+            margin-bottom: 10px;
+            background: #222;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .file-info { flex: 1; min-width: 200px; }
+        .qr-container { margin-left: 15px; background: white; padding: 5px; display: none; }
+
+        /* PROGRESS BARS */
+        .progress-wrapper { width: 100%; margin-top: 5px; }
+        progress { width: 100%; height: 20px; }
+        
+        .status { color: #aaa; font-size: 12px; margin-left: 10px; }
+        a.download-link { color: #0ff; text-decoration: none; font-weight: bold; display: none; }
     </style>
 </head>
 <body>
 
-    <h2>Incoming Files</h2>
-    <div id="fileContainer"></div>
+    <!-- 1. DRAG AND DROP AREA -->
+    <div id="drop-zone">
+        Drag files here or click to select
+        <input type="file" id="fileInput" multiple style="display:none">
+    </div>
+
+    <!-- 2. FILE LIST AREA -->
+    <div id="file-list"></div>
 
     <script>
-        // 1. THE LIST OF FILES TO RECEIVE
-        // (In a real app, you might fetch this list from your server first)
-        const incomingFiles = [
-            { name: "Project_Blueprints.pdf", url: "https://your-server.com/files/huge_pdf.pdf" },
-            { name: "Render_Preview.png", url: "https://your-server.com/files/render_4k.png" },
-            { name: "Demo_Video.mp4", url: "https://your-server.com/files/video.mp4" }
-        ];
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('fileInput');
+        const list = document.getElementById('file-list');
 
-        const container = document.getElementById('fileContainer');
-
-        // 2. GENERATE UI IMMEDIATELY
-        // We loop through the list and create the bars BEFORE downloading starts.
-        incomingFiles.forEach(fileData => {
-            startDownload(fileData);
+        // --- DRAG & DROP EVENTS ---
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('hover');
         });
 
-        function startDownload(fileData) {
-            // A. Create HTML Structure
-            const card = document.createElement('div');
-            card.className = 'incoming-file';
-            card.innerHTML = `
-                <div class="file-header">
-                    <span>${fileData.name}</span>
-                    <span class="percent">0%</span>
-                </div>
-                <div class="progress-track">
-                    <div class="progress-fill"></div>
-                </div>
-                <div class="status-text">Connecting...</div>
-                <a href="#" class="save-btn" style="display:none">Save to Device</a>
-            `;
-            container.appendChild(card);
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('hover');
+        });
 
-            // B. References to update
-            const fill = card.querySelector('.progress-fill');
-            const percentText = card.querySelector('.percent');
-            const statusText = card.querySelector('.status-text');
-            const saveBtn = card.querySelector('.save-btn');
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('hover');
+            handleFiles(e.dataTransfer.files);
+        });
 
-            // C. Start the Transfer (Server -> Browser)
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', fileData.url, true);
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        // --- MAIN LOGIC ---
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                uploadAndProcess(file);
+            });
+        }
+
+        function uploadAndProcess(file) {
+            // 1. Create UI Elements
+            const item = document.createElement('div');
+            item.className = 'file-item';
             
-            // IMPORTANT: Set responseType to 'blob' to handle binary files (images, pdfs, zips)
-            xhr.responseType = 'blob'; 
+            // HTML Structure for the row
+            item.innerHTML = `
+                <div class="file-info">
+                    <strong>${file.name}</strong> <span class="status">Waiting...</span>
+                    <div class="progress-wrapper">
+                        <progress value="0" max="100"></progress>
+                    </div>
+                    <a href="#" class="download-link">Ready for Download</a>
+                </div>
+                <div class="qr-container"></div>
+            `;
+            list.appendChild(item);
 
-            // D. TRACK PROGRESS (The "Receiver" logic)
-            xhr.onprogress = function(event) {
-                if (event.lengthComputable) {
-                    const percent = (event.loaded / event.total) * 100;
-                    fill.style.width = percent + '%';
-                    percentText.innerText = Math.round(percent) + '%';
-                    
-                    // Show size downloaded so far (e.g., "5 MB of 20 MB")
-                    const loadedMB = (event.loaded / (1024*1024)).toFixed(1);
-                    const totalMB = (event.total / (1024*1024)).toFixed(1);
-                    statusText.innerText = `Receiving: ${loadedMB}MB / ${totalMB}MB`;
-                } else {
-                    // Fallback if server doesn't send total file size
-                    statusText.innerText = "Receiving... (Size unknown)";
+            const progressBar = item.querySelector('progress');
+            const statusText = item.querySelector('.status');
+            const qrBox = item.querySelector('.qr-container');
+            const downloadLink = item.querySelector('.download-link');
+
+            // 2. SETUP UPLOAD (SENDING)
+            const xhr = new XMLHttpRequest();
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // TRACK SENDING PROGRESS
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = (e.loaded / e.total) * 100;
+                    progressBar.value = percent;
+                    statusText.innerText = `Sending: ${Math.round(percent)}%`;
                 }
             };
 
-            // E. FINISHED (Ready to Save)
-            xhr.onload = function() {
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    // 3. UPLOAD COMPLETE -> SHOW QR
+                    const downloadUrl = xhr.responseText; // Assume server echoes URL
+                    statusText.innerText = "Sent. Generating QR...";
+                    
+                    // Generate QR
+                    qrBox.style.display = 'block';
+                    new QRCode(qrBox, {
+                        text: downloadUrl,
+                        width: 64,
+                        height: 64
+                    });
+
+                    // 4. IMMEDIATELY START "LOADING" (PRE-FETCH)
+                    // This fetches the file blob so it's instant when clicked
+                    startPreLoad(downloadUrl, progressBar, statusText, downloadLink, file.name);
+
+                } else {
+                    statusText.innerText = "Upload Failed.";
+                }
+            };
+
+            xhr.open('POST', 'your_upload_script.php', true);
+            xhr.send(formData);
+        }
+
+        // --- THE "LOADING" LOGIC (Fetch before Download) ---
+        function startPreLoad(url, progressBar, statusText, linkBtn, filename) {
+            const xhrLoad = new XMLHttpRequest();
+            xhrLoad.open('GET', url, true);
+            xhrLoad.responseType = 'blob'; // Important for binary files
+
+            // TRACK LOADING PROGRESS
+            xhrLoad.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = (e.loaded / e.total) * 100;
+                    progressBar.value = percent;
+                    statusText.innerText = `Loading into Memory: ${Math.round(percent)}%`;
+                }
+            };
+
+            xhrLoad.onload = function() {
                 if (this.status === 200) {
-                    fill.style.backgroundColor = "#4CAF50"; // Green
-                    statusText.innerText = "Download Complete. Ready to view.";
-                    
-                    // Convert the downloaded data (Blob) into a local URL
+                    // 5. READY FOR DOWNLOAD
                     const blob = this.response;
-                    const localUrl = window.URL.createObjectURL(blob);
+                    const objectUrl = window.URL.createObjectURL(blob);
                     
-                    // Setup the button
-                    saveBtn.href = localUrl;
-                    saveBtn.download = fileData.name; // Use the original filename
-                    saveBtn.style.display = 'block'; // Reveal the button
-                    saveBtn.innerText = "Save / Open " + fileData.name;
-
-                } else {
-                    statusText.innerText = "Failed to download.";
-                    fill.style.backgroundColor = "red";
+                    progressBar.value = 100;
+                    statusText.innerText = "Ready.";
+                    
+                    linkBtn.href = objectUrl;
+                    linkBtn.download = filename;
+                    linkBtn.style.display = 'block'; // Show the button now
                 }
             };
 
-            xhr.onerror = function() {
-                statusText.innerText = "Network Error.";
-                fill.style.backgroundColor = "red";
-            };
-
-            // Start fetching
-            xhr.send();
+            xhrLoad.send();
         }
     </script>
 </body>
