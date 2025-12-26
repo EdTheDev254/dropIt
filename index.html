@@ -84,8 +84,8 @@
         let conn = null;
         
         // Storage for incoming chunks
-        const incomingFiles = {}; // { fileId: { chunks: [], total: 0, received: 0, name: '', type: '' } }
-        const completedBlobs = {}; // { fileName: Blob }
+        const incomingFiles = {}; 
+        const completedBlobs = {}; 
 
         const statusEl = document.getElementById('status');
         const dropZone = document.getElementById('drop-zone');
@@ -132,7 +132,6 @@
                 dropZone.style.borderColor = "#28a745";
             });
             
-            // Listen for "download complete" signals to gray out items
             conn.on('data', (data) => {
                 if(data.type === 'download-confirm') markAsDownloadedUI(data.name);
             });
@@ -147,42 +146,50 @@
             fileInput.addEventListener('change', () => handleFiles(fileInput.files));
         }
 
-        async function handleFiles(files) {
+        // UPDATED: Triggers all files at once (Parallel)
+        function handleFiles(files) {
             if (!conn || !conn.open) return alert("Connect a device first!");
             
-            for (let file of files) {
-                const fileId = Math.random().toString(36).substr(2, 9);
-                createFileItemUI(fileId, file.name, "Sending...", false); // false = isReceiver
-                
-                // 1. Send Start Header
-                conn.send({ 
-                    type: 'start', id: fileId, name: file.name, 
-                    size: file.size, fileType: file.type 
-                });
+            // Loop through all files and start 'sendFile' immediately for each
+            Array.from(files).forEach(file => {
+                sendFile(file);
+            });
+        }
 
-                // 2. Chunk and Send
-                const chunkSize = 16 * 1024; // 16KB chunks
-                let offset = 0;
+        // New function to handle individual file logic
+        async function sendFile(file) {
+            const fileId = Math.random().toString(36).substr(2, 9);
+            createFileItemUI(fileId, file.name, "Sending...", false); 
+            
+            // 1. Send Start Header
+            conn.send({ 
+                type: 'start', id: fileId, name: file.name, 
+                size: file.size, fileType: file.type 
+            });
+
+            // 2. Chunk and Send
+            const chunkSize = 16 * 1024; // 16KB chunks
+            let offset = 0;
+            
+            while(offset < file.size) {
+                const chunk = file.slice(offset, offset + chunkSize);
+                const buffer = await chunk.arrayBuffer();
                 
-                while(offset < file.size) {
-                    const chunk = file.slice(offset, offset + chunkSize);
-                    const buffer = await chunk.arrayBuffer();
-                    
-                    conn.send({ 
-                        type: 'chunk', id: fileId, 
-                        data: buffer 
-                    });
-                    
-                    offset += buffer.byteLength;
-                    updateProgressUI(fileId, offset, file.size);
-                    
-                    // Small delay to prevent network congestion
-                    if (offset % (chunkSize * 5) === 0) await new Promise(r => setTimeout(r, 10));
-                }
+                conn.send({ 
+                    type: 'chunk', id: fileId, 
+                    data: buffer 
+                });
                 
-                // 3. Update UI to Sent
-                document.getElementById(`status-${fileId}`).textContent = "Sent ✅";
+                offset += buffer.byteLength;
+                updateProgressUI(fileId, offset, file.size);
+                
+                // Keep the small delay to prevent UI freezing, 
+                // but since we aren't awaiting the whole file, others will run too.
+                if (offset % (chunkSize * 10) === 0) await new Promise(r => setTimeout(r, 5));
             }
+            
+            // 3. Update UI to Sent
+            document.getElementById(`status-${fileId}`).textContent = "Sent ✅";
         }
 
         // --- 3. Receiver Logic (Phone) ---
@@ -208,12 +215,12 @@
                     updateProgressUI(data.id, f.received, f.total);
 
                     if (f.received >= f.total) {
-                        // Complete! Reassemble and Show Download
+                        // Complete! Reassemble
                         const blob = new Blob(f.chunks, { type: f.type });
                         completedBlobs[f.name] = blob;
                         
                         finalizeReceiverItem(data.id, f.name);
-                        delete incomingFiles[data.id]; // Free memory
+                        delete incomingFiles[data.id]; 
                     }
                 }
             });
@@ -225,12 +232,10 @@
             const li = document.createElement('li');
             li.className = 'file-item';
             li.id = `item-${id}`;
-            // Also tag with name for sync lookup
             li.dataset.filename = name; 
 
             let controlsHtml = '';
             if(isReceiver) {
-                // Hidden download controls, shown when done
                 controlsHtml = `
                     <div class="download-ui" id="dl-ui-${id}">
                         <input type="checkbox" class="file-check" value="${name}">
@@ -261,14 +266,12 @@
         }
 
         function finalizeReceiverItem(id, name) {
-            // Hide progress bar, Show download controls
             document.getElementById(`prog-cont-${id}`).style.display = 'none';
             document.getElementById(`status-${id}`).textContent = 'Ready';
             document.getElementById(`dl-ui-${id}`).style.display = 'flex';
         }
 
         function markAsDownloadedUI(name) {
-            // Find item by dataset
             const items = document.querySelectorAll('.file-item');
             items.forEach(li => {
                 if(li.dataset.filename === name) {
@@ -289,7 +292,6 @@
             const blob = completedBlobs[name];
             if (!blob) return;
 
-            // Save file
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -298,16 +300,13 @@
             a.click();
             document.body.removeChild(a);
 
-            // Update UI locally
             markAsDownloadedUI(name);
 
-            // Tell Sender
             if(conn && conn.open) {
                 conn.send({ type: 'download-confirm', name: name });
             }
         }
 
-        // Bulk Actions
         document.getElementById('select-all').addEventListener('change', (e) => {
             const checkboxes = document.querySelectorAll('.file-check:not(:disabled)');
             checkboxes.forEach(cb => cb.checked = e.target.checked);
